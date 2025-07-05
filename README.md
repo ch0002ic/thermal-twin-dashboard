@@ -99,8 +99,3 @@ All tests should pass before making further changes or deploying the backend.
 ## Notes
 - The backend now uses a unified, production-ready PINN surrogate logic for all surrogate predictions. No legacy or mock code remains.
 - For production, configure CORS and deployment settings as needed.
-
----
-
-## License
-MIT
