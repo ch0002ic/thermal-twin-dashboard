@@ -1,103 +1,152 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import axios from 'axios';
 import Plot from 'react-plotly.js';
 import './App.css';
 
+// Config for parameter fields
+const PARAM_FIELDS = [
+  { name: 'power_load', label: 'Power load (W)', type: 'number', step: 0.1, default: 50 },
+  { name: 'airflow_rate', label: 'Airflow rate (m³/min)', type: 'number', step: 0.1, default: 1.0 },
+  { name: 'ambient_temp', label: 'Ambient temp (°C)', type: 'number', step: 0.1, default: 25 },
+  { name: 'sensor_placement', label: 'Sensor placement', type: 'text', default: 'default' },
+  { name: 'tim_conductivity', label: 'TIM conductivity (W/mK)', type: 'number', step: 0.1, default: 5.0 },
+  { name: 'microchannel_dim', label: 'Microchannel dim', type: 'text', default: 'default' },
+];
+
+function getInitialParams() {
+  const obj = {};
+  PARAM_FIELDS.forEach(f => { obj[f.name] = f.default; });
+  return obj;
+}
+
 function App() {
-  const [params, setParams] = useState({
-    power_load: 50,
-    airflow_rate: 1.0,
-    ambient_temp: 25,
-    sensor_placement: 'default',
-    tim_conductivity: 5.0,
-    microchannel_dim: 'default',
-  });
-  const [profile, setProfile] = useState(null);
+  const [params, setParams] = useState(getInitialParams());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [modelType, setModelType] = useState('physics'); // 'physics' or 'surrogate'
+  const [positions, setPositions] = useState([]);
+  const [temperatures, setTemperatures] = useState([]);
+  const [meta, setMeta] = useState(null);
+
+  useEffect(() => {
+    if (modelType === 'surrogate') {
+      axios.get('/surrogate_model_meta.json')
+        .then(res => setMeta(res.data))
+        .catch(() => setMeta(null));
+    } else {
+      setMeta(null);
+    }
+  }, [modelType]);
 
   const handleChange = (e) => {
-    const { name, value } = e.target;
-    setParams((prev) => ({ ...prev, [name]: value }));
+    const { name, value, type } = e.target;
+    setParams((prev) => ({
+      ...prev,
+      [name]: type === 'number' ? value : value,
+    }));
+    setError(null);
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setLoading(true);
+  const handlePredict = async () => {
+    const endpoint =
+      modelType === 'physics'
+        ? '/api/predict'
+        : '/api/predict_surrogate';
     setError(null);
+    setLoading(true);
     try {
-      const res = await axios.post('/api/predict', {
-        ...params,
-        power_load: parseFloat(params.power_load),
-        airflow_rate: parseFloat(params.airflow_rate),
-        ambient_temp: parseFloat(params.ambient_temp),
-        tim_conductivity: parseFloat(params.tim_conductivity),
+      const reqParams = { ...params };
+      // Convert number fields
+      PARAM_FIELDS.forEach(f => {
+        if (f.type === 'number') reqParams[f.name] = parseFloat(params[f.name]);
       });
-      setProfile(res.data);
+      const response = await axios.post(endpoint, reqParams);
+      setPositions(response.data.positions);
+      setTemperatures(response.data.temperatures);
+      setError(null);
     } catch (err) {
-      setError('Prediction failed.');
+      setPositions([]);
+      setTemperatures([]);
+      setError(err.response?.data?.error || 'Prediction failed.');
     }
     setLoading(false);
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    handlePredict();
   };
 
   return (
     <div className="App">
       <header className="App-header">
         <h1>Thermal twin dashboard</h1>
-        <form onSubmit={handleSubmit} style={{ marginBottom: 24 }}>
+        <form onSubmit={handleSubmit} style={{ marginBottom: 24, opacity: loading ? 0.6 : 1, pointerEvents: loading ? 'none' : 'auto' }}>
+          {PARAM_FIELDS.map(f => (
+            <label key={f.name}>
+              {f.label}:
+              <input
+                type={f.type}
+                name={f.name}
+                value={params[f.name]}
+                onChange={handleChange}
+                step={f.step}
+                disabled={loading}
+              />
+            </label>
+          ))}
           <label>
-            Power load (W):
-            <input type="number" name="power_load" value={params.power_load} onChange={handleChange} step="0.1" />
-          </label>
-          <label>
-            Airflow rate (m³/min):
-            <input type="number" name="airflow_rate" value={params.airflow_rate} onChange={handleChange} step="0.1" />
-          </label>
-          <label>
-            Ambient temp (°C):
-            <input type="number" name="ambient_temp" value={params.ambient_temp} onChange={handleChange} step="0.1" />
-          </label>
-          <label>
-            Sensor placement:
-            <input type="text" name="sensor_placement" value={params.sensor_placement} onChange={handleChange} />
-          </label>
-          <label>
-            TIM conductivity (W/mK):
-            <input type="number" name="tim_conductivity" value={params.tim_conductivity} onChange={handleChange} step="0.1" />
-          </label>
-          <label>
-            Microchannel dim:
-            <input type="text" name="microchannel_dim" value={params.microchannel_dim} onChange={handleChange} />
+            Model:
+            <select value={modelType} onChange={e => setModelType(e.target.value)} disabled={loading}>
+              <option value="physics">Physics model</option>
+              <option value="surrogate">Surrogate model</option>
+            </select>
           </label>
           <button type="submit" disabled={loading} style={{ marginLeft: 16 }}>
             {loading ? 'Predicting...' : 'Predict'}
           </button>
         </form>
-        {error && <div style={{ color: 'red' }}>{error}</div>}
-        {profile && (
-          <Plot
-            data={[
-              {
-                x: profile.positions,
-                y: profile.temperatures,
-                type: 'scatter',
-                mode: 'lines+markers',
-                marker: { color: 'orange' },
-                name: 'Temperature',
-              },
-            ]}
-            layout={{
-              title: 'Predicted temperature profile',
-              xaxis: { title: 'Position' },
-              yaxis: { title: 'Temperature (°C)' },
-              autosize: true,
-              paper_bgcolor: '#222',
-              plot_bgcolor: '#222',
-              font: { color: '#fff' },
-            }}
-            style={{ width: '100%', maxWidth: 600, height: 400 }}
-            config={{ responsive: true }}
-          />
+        {modelType === 'surrogate' && meta && (
+          <div style={{ color: '#ccc', marginBottom: 12, fontSize: 14, background: '#333', padding: 8, borderRadius: 6 }}>
+            <b>Surrogate model info:</b><br />
+            Trained: {meta.date}<br />
+            Epochs: {meta.epochs}, Batch size: {meta.batch_size}, LR: {meta.lr}<br />
+            PyTorch: {meta.pytorch_version}, Numpy: {meta.numpy_version}
+          </div>
+        )}
+        {error && <div style={{ color: 'red', fontWeight: 600, marginBottom: 8 }}>{error}</div>}
+        {positions.length > 0 && temperatures.length > 0 && (
+          <>
+            <div style={{ color: '#fff', marginBottom: 8 }}>
+              Showing results from: <b>{modelType === 'physics' ? 'Physics model' : 'Surrogate model'}</b>
+            </div>
+            <Plot
+              data={[
+                {
+                  x: positions,
+                  y: temperatures,
+                  type: 'scatter',
+                  mode: 'lines+markers',
+                  marker: { color: 'orange' },
+                  name: 'Temperature',
+                },
+              ]}
+              layout={{
+                title: 'Predicted temperature profile',
+                xaxis: { title: 'Position' },
+                yaxis: { title: 'Temperature (°C)' },
+                autosize: true,
+                paper_bgcolor: '#222',
+                plot_bgcolor: '#222',
+                font: { color: '#fff' },
+              }}
+              style={{ width: '100%', maxWidth: 600, height: 400 }}
+              config={{ responsive: true }}
+            />
+          </>
+        )}
+        {loading && (
+          <div style={{ color: '#fff', marginTop: 16 }}>Loading...</div>
         )}
       </header>
     </div>

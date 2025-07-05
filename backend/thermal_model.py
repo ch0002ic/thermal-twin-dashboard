@@ -1,4 +1,31 @@
 import numpy as np
+import torch
+import os
+from backend.pinn_surrogate import select_pinn_for_params
+
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def predict_pinn_surrogate(params, nx=50, device='cpu', debug=False, return_model_path=False):
+    """Run the PINN surrogate for given params, return prediction (and optionally model path/arch)"""
+    pl = params['power_load']
+    af = params['airflow_rate']
+    at = params['ambient_temp']
+    tc = params['tim_conductivity']
+    model, arch, model_path = select_pinn_for_params((pl, af, at, tc), nx=nx, backend_dir=BACKEND_DIR, debug=debug)
+    x = torch.linspace(0, 0.1, nx, device=device).unsqueeze(0)
+    params_tensor = torch.tensor([[pl, af, at, tc]], dtype=torch.float32, device=device)
+    params_exp = params_tensor.unsqueeze(1).expand(-1, nx, -1)
+    inp = torch.cat([params_exp, x.unsqueeze(-1)], dim=-1)
+    with torch.no_grad():
+        T_pred = model(inp).cpu().numpy().flatten()
+    if return_model_path:
+        return T_pred, model_path, arch
+    return T_pred
+
+# --- PINN surrogate unified interface ---
+def predict_pinn(params, ensemble=None, local=None, local_hard_edge_models=None, nx=50, device='cpu'):
+    """Predict using the best available PINN surrogate (ensemble/local/hard edge)"""
+    return predict_pinn_surrogate(params, ensemble=ensemble, local=local, local_hard_edge_models=local_hard_edge_models, nx=nx, device=device)
 
 class ThermalModel:
     def __init__(self, length=0.1, nx=50, base_thermal_diffusivity=1e-5, rho=1000, cp=900):
@@ -74,3 +101,5 @@ class ThermalModel:
                                          time_steps=10000, boundary=boundary,
                                          uniform_source=uniform_source, mode='transient')
         return T
+
+# If PINN surrogate prediction is needed, use the new profile-wise PINN logic as in compare_models.py
